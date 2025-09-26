@@ -3,7 +3,6 @@ import torch.nn as nn
 from .anchor import AdaptiveAnchor
 from .space import SingularSpace
 
-
 class SingularTrajectory(nn.Module):
     r"""The SingularTrajectory model
 
@@ -13,7 +12,7 @@ class SingularTrajectory(nn.Module):
         hyper_params (DotDict): The hyper-parameters
     """
 
-    def __init__(self, baseline_model, hook_func, hyper_params):
+    def __init__(self, baseline_model, hook_func,hyper_params,args):
         super().__init__()
 
         self.baseline_model = baseline_model
@@ -25,11 +24,13 @@ class SingularTrajectory(nn.Module):
         self.s = hyper_params.num_samples
         self.dim = hyper_params.traj_dim
         self.static_dist = hyper_params.static_dist
+        
+        self.attention = nn.MultiheadAttention(embed_dim=self.k, num_heads=1, batch_first=True)
 
-        self.Singular_space_m = SingularSpace(hyper_params=hyper_params, norm_sca=True)
-        self.Singular_space_s = SingularSpace(hyper_params=hyper_params, norm_sca=False)
-        self.adaptive_anchor_m = AdaptiveAnchor(hyper_params=hyper_params)
-        self.adaptive_anchor_s = AdaptiveAnchor(hyper_params=hyper_params)
+        self.Singular_space_m = SingularSpace(hyper_params=hyper_params,args=args, ms=1, norm_sca=True)
+        self.Singular_space_s = SingularSpace(hyper_params=hyper_params,args=args, ms=0, norm_sca=False)
+        self.adaptive_anchor_m = AdaptiveAnchor(hyper_params=hyper_params, vae_model=self.Singular_space_m.vae_model)
+        self.adaptive_anchor_s = AdaptiveAnchor(hyper_params=hyper_params, vae_model=self.Singular_space_s.vae_model)
 
     def calculate_parameters(self, obs_traj, pred_traj):
         r"""Generate the Sinuglar space of the SingularTrajectory model
@@ -80,6 +81,17 @@ class SingularTrajectory(nn.Module):
             mask = (obs_traj[:, -1] - obs_traj[:, -3]).div(2).norm(p=2, dim=-1) > self.static_dist
         return mask
 
+    def nolinear_combination(self, input_data):
+        r"""对输入数据做一次非线性变换"""
+        # print(input_data.shape,'\n')
+        # 假设 input_data shape 为 (self.k, n_ped)
+        input_data = input_data.permute(1, 0)  # 变为 (n_ped, self.k)
+        # 非线性变换
+        output = torch.relu(self.linear(input_data).to(input_data.device))
+        # print(output.shape)
+        output = output.permute(1, 0)  # 变为 (self.k,n_ped)
+        return output
+    
     def forward(self, obs_traj, adaptive_anchor, pred_traj=None, addl_info=None):
         r"""The forward function of the SingularTrajectory model
 
@@ -102,8 +114,10 @@ class SingularTrajectory(nn.Module):
         pred_s_traj_gt = pred_traj[~mask] if pred_traj is not None else None
 
         # Projection
+        # print("before projection pred_s_traj_gt.shape=",pred_s_traj_gt.shape) ([195, 12, 2])
         C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt)
         C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt)
+        # print("after projection C_s_obs.shape=",C_s_obs.shape)  [8,195]
         C_obs = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
         C_obs[:, mask], C_obs[:, ~mask] = C_m_obs, C_s_obs
 
@@ -115,18 +129,31 @@ class SingularTrajectory(nn.Module):
         obs_ori -= obs_ori.mean(dim=1, keepdim=True)
 
         ### Adaptive anchor per agent
+        # print("before permute adaptive_anchor.shape=",adaptive_anchor.shape)  # torch.Size([512, 8, 20])
         C_anchor = adaptive_anchor.permute(1, 0, 2)
-        addl_info["anchor"] = C_anchor.clone()
+        addl_info["anchor"] = C_anchor.detach().clone()
+        # print("after permute C_anchor.shape=",C_anchor.shape) # torch.Size([8, 512, 20])
 
         # Trajectory prediction
+        
+        # 对 C_obs 进行自注意力
+        # C_obs: [k, n_ped] -> [n_ped, k] for attention, attention input (batch,seq_len,latent_dim)
+        C_obs_t = C_obs.T.unsqueeze(0)  # [1, n_ped, k]
+        attn_out, _ = self.attention(C_obs_t, C_obs_t, C_obs_t)
+        C_obs = attn_out.squeeze(0).T  # [k, n_ped]
+        # print("before diffusion.shape=",C_obs.shape) #[4,512]
+        
+        # C_obs=nolinear_combination(C_obs)
         input_data = self.hook_func.model_forward_pre_hook(C_obs, obs_ori, addl_info)
         output_data = self.hook_func.model_forward(input_data, self.baseline_model)
         C_pred_refine = self.hook_func.model_forward_post_hook(output_data, addl_info) * 0.1
 
+        # print("C_pred_refine.shape=",C_pred_refine.shape) # torch.Size([8, 517, 20])
         C_m_pred = self.adaptive_anchor_m(C_pred_refine[:, mask], C_anchor[:, mask])
         C_s_pred = self.adaptive_anchor_s(C_pred_refine[:, ~mask], C_anchor[:, ~mask])
 
         # Reconstruction
+        # print("before reconstruction C_m_pred.shape=",C_m_pred.shape) # torch.Size([8, 206, 20])
         pred_m_traj_recon = self.Singular_space_m.reconstruction(C_m_pred)
         pred_s_traj_recon = self.Singular_space_s.reconstruction(C_s_pred)
         pred_traj_recon = torch.zeros((self.s, n_ped, self.t_pred, self.dim), dtype=torch.float, device=obs_traj.device)

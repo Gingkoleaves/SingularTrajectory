@@ -13,13 +13,16 @@ class AdaptiveAnchor(nn.Module):
         hyper_params (DotDict): The hyper-parameters
     """
 
-    def __init__(self, hyper_params):
+    def __init__(self, hyper_params, vae_model):
         super().__init__()
 
         self.hyper_params = hyper_params
         self.k = hyper_params.k
         self.s = hyper_params.num_samples
         self.dim = hyper_params.traj_dim
+        self.obs_len = hyper_params.obs_len
+        self.pred_len = hyper_params.pred_len
+        self.vae_model = vae_model
 
         self.C_anchor = nn.Parameter(torch.zeros((self.k, self.s)))
 
@@ -33,19 +36,40 @@ class AdaptiveAnchor(nn.Module):
         Returns:
             C (torch.Tensor): The Singular space coordinates"""
 
-        # Euclidean space -> Singular space
-        tdim = evec.size(0)
-        M = traj.reshape(-1, tdim).T
-        C = evec.T.detach() @ M
+        if self.hyper_params.vae_train:
+            # Use the VAE model to encode the trajectory
+            traj = self.vae_model.encode_space(traj.cuda())
+            C = traj
+        else:
+            # Euclidean space -> Singular space
+            tdim = evec.size(0)
+            M = traj.reshape(-1, tdim).T
+            C = evec.T.detach() @ M
+        
         return C
 
     def batch_to_Singular_space(self, traj, evec):
-        # Euclidean space -> Singular space
-        tdim = evec.size(0)
-        M = traj.reshape(-1, tdim).transpose(1, 2)
-        C = evec.T.detach() @ M
-        return C
+        r"""Transform a batch of Euclidean trajectories to Singular space coordinates
 
+        Args:
+            traj (torch.Tensor): The batch of trajectories to be transformed
+            evec (torch.Tensor): The Singular space basis vectors
+
+        Returns:
+            C (torch.Tensor): The Singular space coordinates
+        """
+
+        if self.hyper_params.vae_train:
+            # Use the VAE model to encode the trajectory
+
+            traj = self.vae_model.encode_space(traj.cuda())
+            C = traj
+        else:
+            # Euclidean space -> Singular space
+            tdim = evec.size(0)
+            M = traj.reshape(traj.size(0), traj.size(1), tdim).transpose(1, 2)
+            C = evec.T.detach() @ M
+        return C
     def to_Euclidean_space(self, C, evec):
         r"""Transform Singular space coordinates to Euclidean trajectories
 
@@ -56,19 +80,49 @@ class AdaptiveAnchor(nn.Module):
         Returns:
             traj (torch.Tensor): The Euclidean trajectory"""
 
-        # Singular space -> Euclidean
-        t = evec.size(0) // self.dim
-        M = evec.detach() @ C
-        traj = M.T.reshape(-1, t, self.dim)
-        return traj
+        if self.hyper_params.vae_train:
+            # Use the VAE model to decode the trajectory
+            t = evec.size(0) // self.dim
+            if evec.size(0) == self.t_obs * self.dim:
+                traj = self.vae_model.decode_obs(C)
+            else:
+                traj = self.vae_model.decode_pred(C)
+            return traj.reshape(-1,t,self.dim)
+        else:
+            # Singular space -> Euclidean
+            t = evec.size(0) // self.dim
+            M = evec.detach() @ C
+            traj = M.T.reshape(-1, t, self.dim)
+            return traj
     
     def batch_to_Euclidean_space(self, C, evec):
-        # Singular space -> Euclidean
-        b = C.size(0)
-        t = evec.size(0) // self.dim
-        M = evec.detach() @ C
-        traj = M.transpose(1, 2).reshape(b, -1, t, self.dim)
-        return traj
+        r"""Transform a batch of Singular space coordinates to Euclidean trajectories
+
+        Args:
+            C (torch.Tensor): The batch of Singular space coordinates
+
+        Returns:
+            traj (torch.Tensor): The batch of Euclidean trajectories
+        """
+        # C:[20,4,batch]
+        if self.hyper_params.vae_train:
+            b = C.size(0)
+            t = evec.size(0) // self.dim            
+            C=C.permute(2,0,1).reshape(-1,self.k)
+            
+            # Use the VAE model to decode the trajectory
+            if evec.size(0) == self.t_obs * self.dim:
+                traj = self.vae_model.decode_obs(C)
+            else:
+                traj = self.vae_model.decode_pred(C)
+            return traj.reshape(b,-1,t,self.dim)
+        else:
+            # Singular space -> Euclidean
+            b = C.size(0)
+            t = evec.size(0) // self.dim
+            M = evec.detach() @ C
+            traj = M.transpose(1, 2).reshape(b, -1, t, self.dim)
+            return traj
 
     def anchor_initialization(self, pred_traj_norm, V_pred_trunc):
         r"""Anchor initialization on Singular space
@@ -76,15 +130,21 @@ class AdaptiveAnchor(nn.Module):
         Args:
             pred_traj_norm (torch.Tensor): The normalized predicted trajectory
             V_pred_trunc (torch.Tensor): The truncated Singular space basis vectors of the predicted trajectory
-
         Note:
             This function should be called once before training the model.
-        """
+        """        
+        # print("pred_traj_norm.shape=",pred_traj_norm.shape) # ([19148, 12, 2])
+        if self.hyper_params.vae_train:
+            # Use the VAE model to encode the trajectory
+            C_pred = self.vae_model.encode_space(pred_traj_norm.cuda()).detach().cpu().numpy()
+        else:
+            # Trajectory projection
+            C_pred = self.to_Singular_space(pred_traj_norm, evec=V_pred_trunc).T.detach().numpy()
 
-        # Trajectory projection
-        C_pred = self.to_Singular_space(pred_traj_norm, evec=V_pred_trunc).T.detach().numpy()
         C_anchor = torch.FloatTensor(KMeans(n_clusters=self.s, random_state=0, init='k-means++', n_init=1).fit(C_pred).cluster_centers_.T)
 
+        # print("C_anchor.shape=",C_anchor.shape) # [4,20]
+        
         # Register anchors as model parameters
         self.C_anchor = nn.Parameter(C_anchor.to(self.C_anchor.device))
 
@@ -97,8 +157,11 @@ class AdaptiveAnchor(nn.Module):
         space.traj_normalizer.calculate_params(obs_traj.cuda().detach())
         init_anchor = self.C_anchor.unsqueeze(dim=0).repeat_interleave(repeats=n_ped, dim=0).detach()
         init_anchor = init_anchor.permute(2, 1, 0)
+        
+        # print("init_anchor.shape=",init_anchor.shape,"\n evec.shape=",V_trunc.shape) # [20,4,10131] [24,6]
+        
         init_anchor_euclidean = space.batch_to_Euclidean_space(init_anchor, evec=V_trunc)
-        init_anchor_euclidean = space.traj_normalizer.denormalize(init_anchor_euclidean).cpu().numpy()
+        init_anchor_euclidean = space.traj_normalizer.denormalize(init_anchor_euclidean).detach().cpu().numpy()
         adaptive_anchor_euclidean = init_anchor_euclidean.copy()
         obs_traj = obs_traj.cpu().numpy()
         
@@ -123,7 +186,11 @@ class AdaptiveAnchor(nn.Module):
             adaptive_anchor_euclidean[:, ped_id] = prototype_world
         
         adaptive_anchor_euclidean = space.traj_normalizer.normalize(torch.FloatTensor(adaptive_anchor_euclidean).cuda())
+        
+        # print("before adaptive_anchor.shape=",adaptive_anchor_euclidean.shape) # torch.Size([20, 10131, 12, 2])
+        # print("evec.size=",V_trunc.shape) # torch.Size([20, 10131, 12, 2])
         adaptive_anchor = space.batch_to_Singular_space(adaptive_anchor_euclidean, evec=V_trunc)
+        # print("after adaptive_anchor.shape=",adaptive_anchor.shape) # torch.Size([20, 4, 10131])
         adaptive_anchor = adaptive_anchor.permute(2, 1, 0).cpu()
         # If you don't want to use an image, return `init_anchor`.
         return adaptive_anchor

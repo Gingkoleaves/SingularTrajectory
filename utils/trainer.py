@@ -5,6 +5,8 @@ import numpy as np
 from tqdm import tqdm
 from . import *
 
+import torch
+import torchviz
 
 class STTrainer:
     r"""Base class for all Trainers"""
@@ -21,7 +23,7 @@ class STTrainer:
         self.dataset_dir = hyper_params.dataset_dir + hyper_params.dataset + '/'
         self.checkpoint_dir = hyper_params.checkpoint_dir + '/' + args.tag + '/' + hyper_params.dataset + '/'
         print("Checkpoint dir:", self.checkpoint_dir)
-        self.log = {'train_loss': [], 'val_loss': []}
+        self.log = {'train_loss': [], 'val_loss': [],'loss_eigentraj':[]}
         self.stats_func, self.stats_meter = None, None
         self.reset_metric()
 
@@ -77,6 +79,7 @@ class STTrainer:
             print("Train_loss: {0:.8f}, Val_los: {1:.8f}".format(self.log['train_loss'][-1], self.log['val_loss'][-1]))
             print("Min_val_epoch: {0}, Min_val_loss: {1:.8f}".format(np.array(self.log['val_loss']).argmin(),
                                                                      np.array(self.log['val_loss']).min()))
+            print("The loss_eigentraj: {0:.8f}".format(np.array(self.log['loss_eigentraj'][-1])))
             print(" ")
         print("Done.")
 
@@ -89,14 +92,13 @@ class STTrainer:
 
     def load_model(self, filename='model_best.pth'):
         model_path = self.checkpoint_dir + filename
-        self.model.load_state_dict(torch.load(model_path))
+        self.model.load_state_dict(torch.load(model_path))       
 
     def save_model(self, filename='model_best.pth'):
         if not os.path.exists(self.checkpoint_dir):
             os.makedirs(self.checkpoint_dir)
         model_path = self.checkpoint_dir + filename
         torch.save(self.model.state_dict(), model_path)
-
 
 class STSequencedMiniBatchTrainer(STTrainer):
     r"""Base class using sequenced mini-batch training strategy"""
@@ -257,7 +259,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         cfg = DotDict({'scheduler': 'ddim', 'steps': 10, 'beta_start': 1.e-4, 'beta_end': 5.e-2, 'beta_schedule': 'linear', 
                        'k': hyper_params.k, 's': hyper_params.num_samples})
         predictor_model = base_model(cfg).cuda()
-        eigentraj_model = model(baseline_model=predictor_model, hook_func=hook_func, hyper_params=hyper_params).cuda()
+        eigentraj_model = model(baseline_model=predictor_model, hook_func=hook_func, hyper_params=hyper_params,args=args).cuda()
         self.model = eigentraj_model
         self.optimizer = torch.optim.AdamW(params=self.model.parameters(), lr=hyper_params.lr,
                                            weight_decay=hyper_params.weight_decay)
@@ -270,6 +272,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
     def train(self, epoch):
         self.model.train()
         loss_batch = 0
+        loss_eigentraj_batch=0
 
         if self.loader_train.dataset.anchor is None:
             self.init_adaptive_anchor(self.loader_train.dataset)
@@ -282,18 +285,36 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             self.optimizer.zero_grad()
 
             additional_information = {"scene_mask": scene_mask, "num_samples": self.hyper_params.num_samples}
+            
+            # print("obs_traj.shape=",obs_traj.shape)    obs_traj.shape= torch.Size([516, 8, 2])
+            # print("pred_traj.shape=",pred_traj.shape)  pred_traj.shape= torch.Size([516, 12, 2])
+            # print("adaptive_anchor.shape=",adaptive_anchor.shape) #  adaptive_anchor.shape= torch.Size([513, 4, 20])
+            
+            
             output = self.model(obs_traj, adaptive_anchor, pred_traj, addl_info=additional_information)
+            """
+            # 可视化
+            if cnt==1:
+                graph = torchviz.make_dot(output["recon_traj"], params=dict(self.model.named_parameters()))
+                graph.render("VAE_graph") # 保存计算图为 PDF 文件
+            """
 
             loss = output["loss_euclidean_ade"]
             loss[torch.isnan(loss)] = 0
             loss_batch += loss.item()
+            loss_eigentraj_batch+=output['loss_eigentraj'].item()
 
-            loss.backward()
+            # torch.autograd.set_detect_anomaly(True)
+            
+            # print("Computing loss in {}!".format(cnt))
+            # print("loss.requires_grad=", loss.requires_grad, " grad_fn=", loss.grad_fn)
+            loss.backward(retain_graph=False)
             if self.hyper_params.clip_grad is not None:
                 torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hyper_params.clip_grad)
             self.optimizer.step()
 
         self.log['train_loss'].append(loss_batch / len(self.loader_train))
+        self.log['loss_eigentraj'].append(loss_eigentraj_batch/len(self.loader_train))
 
     @torch.no_grad()
     def valid(self, epoch):
@@ -338,3 +359,4 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
                 self.stats_meter[metric].extend(value)
 
         return {x: self.stats_meter[x].mean() for x in self.stats_meter.keys()}
+

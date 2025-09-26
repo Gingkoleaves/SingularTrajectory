@@ -4,6 +4,8 @@ import torch
 
 def model_forward_pre_hook(obs_data, obs_ori, addl_info):
     # Pre-process input data for the baseline model
+    # print("before obs.shape=",obs_data.shape,"obs_ori.shape=",obs_ori.shape,'\n')
+    
     if obs_ori is not None:
         obs_data = torch.cat([obs_data, obs_ori], dim=0)
     
@@ -17,6 +19,7 @@ def model_forward_pre_hook(obs_data, obs_ori, addl_info):
     loc = anchor.permute(1, 2, 0).unsqueeze(dim=-1)
     input_data = [obs_data, scene_mask, loc]
     
+    # print("obs.shape=",obs_data.shape,"mask.shape=",scene_mask.shape,"loc.shape=",loc.shape,'\n')
     return input_data
 
 

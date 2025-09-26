@@ -42,7 +42,7 @@ class social_transformer(nn.Module):
     codebase borrowed from https://github.com/MediaBrain-SJTU/LED"""
     def __init__(self, cfg):
         super(social_transformer, self).__init__()
-        self.encode_past = nn.Linear(cfg.k*cfg.s+6, 256, bias=False)
+        self.encode_past = nn.Linear(cfg.k*cfg.s+cfg.k+2, 256, bias=False)
         self.layer = nn.TransformerEncoderLayer(d_model=256, nhead=2, dim_feedforward=256)
         self.transformer_encoder = nn.TransformerEncoder(self.layer, num_layers=2)
 

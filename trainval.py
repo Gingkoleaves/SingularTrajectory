@@ -1,9 +1,12 @@
 import os
 import argparse
 import baseline
+from VaeRepresentationNet.VaeModel import SharedVaeDimenReductioner
 from SingularTrajectory import *
 from utils import *
 
+import os
+os.environ['CUDA_LAUNCH_BLOCKING'] = '1'
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
@@ -22,6 +25,7 @@ if __name__ == '__main__':
 
     os.environ["CUDA_VISIBLE_DEVICES"] = args.gpu_id
     PredictorModel = getattr(baseline, hyper_params.baseline).TrajectoryPredictor
+
     hook_func = DotDict({"model_forward_pre_hook": getattr(baseline, hyper_params.baseline).model_forward_pre_hook,
                          "model_forward": getattr(baseline, hyper_params.baseline).model_forward,
                          "model_forward_post_hook": getattr(baseline, hyper_params.baseline).model_forward_post_hook})
@@ -37,3 +41,5 @@ if __name__ == '__main__':
         print("Testing...", end=' ')
         results = trainer.test()
         print(f"Scene: {hyper_params.dataset}", *[f"{meter}: {value:.8f}" for meter, value in results.items()])
+        
+       

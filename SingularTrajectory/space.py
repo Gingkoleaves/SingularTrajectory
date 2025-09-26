@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .normalizer import TrajNorm
 import numpy as np
+from VaeRepresentationNet import E2EReductioner,SimulaSVDReductioner
 from sklearn.cluster import KMeans
 from scipy.interpolate import BSpline
 
@@ -15,7 +16,7 @@ class SingularSpace(nn.Module):
         norm_rot (bool): Whether to normalize the trajectory with the rotation
         norm_sca (bool): Whether to normalize the trajectory with the scale"""
 
-    def __init__(self, hyper_params, norm_ori=True, norm_rot=True, norm_sca=True):
+    def __init__(self, hyper_params,args=None, ms=1, norm_ori=True, norm_rot=True, norm_sca=True):
         super().__init__()
 
         self.hyper_params = hyper_params
@@ -28,7 +29,8 @@ class SingularSpace(nn.Module):
 
         self.V_trunc = nn.Parameter(torch.zeros((self.t_pred * self.dim, self.k)))
         self.V_obs_trunc = nn.Parameter(torch.zeros((self.t_obs * self.dim, self.k)))
-        self.V_pred_trunc = nn.Parameter(torch.zeros((self.t_pred * self.dim, self.k)))
+        self.V_pred_trunc = nn.Parameter(torch.zeros((self.t_pred * self.dim, self.k)))        
+        self.vae_model = E2EReductioner(hyper_params=hyper_params)
 
     def normalize_trajectory(self, obs_traj, pred_traj=None):
         r"""Trajectory normalization
@@ -70,17 +72,53 @@ class SingularSpace(nn.Module):
         Returns:
             C (torch.Tensor): The Singular space coordinates"""
 
-        # Euclidean space -> Singular space
-        tdim = evec.size(0)
-        M = traj.reshape(-1, tdim).T
-        C = evec.T.detach() @ M
+        # print("to_Singular_space traj.shape=",traj.shape) torch.Size([319, 12, 2])
+        if self.hyper_params.vae_train:
+            tdim = evec.size(0)
+            # Use the VAE model to encode the trajectory
+            C = self.vae_model.encode_space(traj)
+            C = C.transpose(0,1)
+            # print("after to singular C.shape",C.shape) # after to singular C.shape torch.Size([8, 206])
+        else:
+            # Euclidean space -> Singular space
+            tdim = evec.size(0)
+            M = traj.reshape(-1, tdim).T
+            C = evec.T.detach() @ M
+        
         return C
 
     def batch_to_Singular_space(self, traj, evec):
-        # Euclidean space -> Singular space
-        tdim = evec.size(0)
-        M = traj.reshape(traj.size(0), traj.size(1), tdim).transpose(1, 2)
-        C = evec.T.detach() @ M
+        r"""Transform a batch of Euclidean trajectories to Singular space coordinates
+
+        Args:
+            traj (torch.Tensor): The batch of trajectories to be transformed
+            evec (torch.Tensor): The Singular space basis vectors
+
+        Returns:
+            C (torch.Tensor): The Singular space coordinates
+        """
+        # traj.shape= [20,batch,t_obs/t_pred,2]
+        # print("traj.shape()=",traj.shape) # [20,9574,12,2]
+        if self.hyper_params.vae_train:
+            # Use the VAE model to encode the trajectory
+            b=traj.size(1)
+            t = evec.size(0) // self.dim    
+            """
+            traj=traj.reshape(-1,t,self.dim)
+            # print("before traj.shape=",traj.shape) # [20*batch,12,2]
+            traj = self.vae_trainer.model.encode_space(traj)
+            # print("after traj.shape=",traj.shape)   # [20*batch,4]
+            traj=traj.reshape(-1,b,self.k).transpose(1,2)
+            C = traj
+            """
+            traj=self.vae_model.batch_encode_space(traj)  
+            traj=traj.permute(0,2,1)
+            C=traj.reshape(-1,self.k,b)
+        else:
+            # Euclidean space -> Singular space
+            tdim = evec.size(0)
+            M = traj.reshape(traj.size(0), traj.size(1), tdim).transpose(1, 2)
+            C = evec.T.detach() @ M
         return C
 
     def to_Euclidean_space(self, C, evec):
@@ -92,20 +130,61 @@ class SingularSpace(nn.Module):
 
         Returns:
             traj (torch.Tensor): The Euclidean trajectory"""
-
-        # Singular space -> Euclidean
-        t = evec.size(0) // self.dim
-        M = evec.detach() @ C
-        traj = M.T.reshape(-1, t, self.dim)
-        return traj
+        
+        if self.hyper_params.vae_train:
+            # Use the VAE model to decode the trajectory
+            t = evec.size(0) // self.dim
+            C=C.reshape(-1,t,self.k)
+            # print("evec.shape=",evec.shape)
+            if evec.size(0) == self.t_obs * self.dim:
+                traj = self.vae_model.decode_obs(C)
+            else:
+                traj = self.vae_model.decode_pred(C)
+            return traj.reshape(-1,t,self.dim)
+        else:
+            # Singular space -> Euclidean
+            t = evec.size(0) // self.dim
+            M = evec.detach() @ C
+            traj = M.T.reshape(-1, t, self.dim)
+            return traj
     
     def batch_to_Euclidean_space(self, C, evec):
-        # Singular space -> Euclidean
-        b = C.size(0)
-        t = evec.size(0) // self.dim
-        M = evec.detach() @ C
-        traj = M.transpose(1, 2).reshape(b, -1, t, self.dim)
-        return traj
+        r"""Transform a batch of Singular space coordinates to Euclidean trajectories
+
+        Args:
+            C (torch.Tensor): The batch of Singular space coordinates
+
+        Returns:
+            traj (torch.Tensor): The batch of Euclidean trajectories
+        """
+        # C:[20,8,batch]
+        # evec.shape= torch.Size([24, 8])
+        if self.hyper_params.vae_train:
+            S,K,B=C.shape
+            t = evec.size(0) // self.dim
+            if 0==B:
+                torch.zeros(S, B, t, self.dim).to(C.device)
+            
+            # print("before batch_to_Euclidean_space C.shape=",C.shape) # [20,4,batch]
+            C=C.permute(0,2,1)
+            # print("end batch_to_Euclidean_space C.shape=",C.shape)   #  [20,batch,4]
+            
+            # Use the VAE model to decode the trajectory
+            # print("evec.shape=",evec.shape)
+            if evec.size(0) == self.t_obs * self.dim:
+                traj = self.vae_model.batch_decode_obs(C)
+            else:
+                traj = self.vae_model.batch_decode_pred(C)
+            return traj.reshape(S,-1,t,self.dim)
+        else:
+            # Singular space -> Euclidean
+            # print("C.shape=",C.shape)
+            # print("evec.shape=",evec.shape)
+            b = C.size(0)
+            t = evec.size(0) // self.dim
+            M = evec.detach() @ C
+            traj = M.transpose(1, 2).reshape(b, -1, t, self.dim)
+            return traj
 
     def truncated_SVD(self, traj, k=None, full_matrices=False):
         r"""Truncated Singular Value Decomposition
@@ -144,7 +223,8 @@ class SingularSpace(nn.Module):
             V_pred_trunc (torch.Tensor): The truncated eigenvectors of the predicted trajectory
 
         Note:
-            This function should be called once before training the model."""
+            This function should be called once before training the model."""       
+
 
         # Normalize trajectory
         obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
@@ -161,7 +241,7 @@ class SingularSpace(nn.Module):
         C_hist = np.zeros([twot_hist, twot_win])
         for i in range(twot_win):
             C_hist[:, i] = BSpline(knots_qu, (np.arange(twot_win) == i).astype(float), degree, extrapolate=False)(steps)
-        C_hist = torch.FloatTensor(C_hist) 
+        C_hist = torch.FloatTensor(C_hist)
 
         V_obs_trunc = C_hist @ V_trunc
         V_pred_trunc = V_trunc
@@ -170,7 +250,7 @@ class SingularSpace(nn.Module):
         self.V_trunc = nn.Parameter(V_trunc.to(self.V_trunc.device))
         self.V_obs_trunc = nn.Parameter(V_obs_trunc.to(self.V_obs_trunc.device))
         self.V_pred_trunc = nn.Parameter(V_pred_trunc.to(self.V_pred_trunc.device))
-
+        
         # Reuse values for anchor generation
         return pred_traj_norm, V_pred_trunc
 
@@ -185,12 +265,19 @@ class SingularSpace(nn.Module):
             C_obs (torch.Tensor): The observed trajectory in the Singular space
             C_pred (torch.Tensor): The predicted trajectory in the Singular space (optional, for training only)
         """
-
-        # Trajectory Projection
-        obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
-        C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc).detach()
-        C_pred = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc).detach() if pred_traj is not None else None
-        return C_obs, C_pred
+        if self.hyper_params.vae_train:
+            # Normalize trajectory
+            obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
+            C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc).detach()
+            # print("after projection C_obs.shape=",C_obs.shape) # [8,206]
+            C_pred = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc).detach() if pred_traj is not None else None
+            return C_obs, C_pred
+        else:
+            # Trajectory Projection
+            obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
+            C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc).detach()
+            C_pred = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc).detach() if pred_traj is not None else None
+            return C_obs, C_pred
 
     def reconstruction(self, C_pred):
         r"""Trajectory reconstruction from the Singular space
@@ -200,9 +287,9 @@ class SingularSpace(nn.Module):
 
         Returns:
             pred_traj (torch.Tensor): The predicted trajectory in the Euclidean space
-        """
-
-        C_pred = C_pred.permute(2, 0, 1)
+        """        
+        # print("C_pred.shape=",C_pred.shape) # 8,batch,20
+        C_pred = C_pred.permute(2, 0, 1) # 20,8,batch
         pred_traj = self.batch_to_Euclidean_space(C_pred, evec=self.V_pred_trunc)
         pred_traj = self.denormalize_trajectory(pred_traj)
 
@@ -210,5 +297,10 @@ class SingularSpace(nn.Module):
 
     def forward(self, C_pred):
         r"""Alias for reconstruction"""
-
+        """
+        if not self.model.training:  # 检查是否在训练模式           
+                params_iterator = self.vae_trainer.model.named_parameters()
+                name, param = next(params_iterator)
+                print(f"{name}: {param.shape}, requires_grad={param.requires_grad}")
+        """
         return self.reconstruction(C_pred)

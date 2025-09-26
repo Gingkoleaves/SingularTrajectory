@@ -280,7 +280,7 @@ class TrajectoryDataset(Dataset):
         start, end = self.seq_start_end[index]
         out = {"obs_traj": self.obs_traj[start:end],
                "pred_traj": self.pred_traj[start:end],
-               "anchor": self.anchor[start:end],
+               "anchor": self.anchor[start:end] if self.anchor is not None else torch.zeros(0),  # 空张量（无实际数据）
                "non_linear_ped": self.non_linear_ped[start:end],
                "loss_mask": self.loss_mask[start:end],
                "scene_mask": None,
