@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 from .anchor import AdaptiveAnchor
 from .space import SingularSpace
+from .neighbors import neighbor_Extractor
 
 class SingularTrajectory(nn.Module):
     r"""The SingularTrajectory model
@@ -112,11 +113,16 @@ class SingularTrajectory(nn.Module):
         obs_s_traj = obs_traj[~mask]
         pred_m_traj_gt = pred_traj[mask] if pred_traj is not None else None
         pred_s_traj_gt = pred_traj[~mask] if pred_traj is not None else None
+        
+        # get neighbors
+        obs_neighbors_feature,obs_neighbors_mask=neighbor_Extractor(obs_traj,addl_info['frame'])
+        obs_m_neighbors_feature=obs_neighbors_feature[mask]
+        obs_s_neighbors_feature=obs_neighbors_feature[~mask]
 
         # Projection
         # print("before projection pred_s_traj_gt.shape=",pred_s_traj_gt.shape) ([195, 12, 2])
-        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt)
-        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt)
+        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt,obs_neighbors_features=obs_m_neighbors_feature)
+        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt,obs_neighbors_features=obs_s_neighbors_feature)
         # print("after projection C_s_obs.shape=",C_s_obs.shape)  [8,195]
         C_obs = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
         C_obs[:, mask], C_obs[:, ~mask] = C_m_obs, C_s_obs

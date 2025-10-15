@@ -290,14 +290,9 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             # print("pred_traj.shape=",pred_traj.shape)  pred_traj.shape= torch.Size([516, 12, 2])
             # print("adaptive_anchor.shape=",adaptive_anchor.shape) #  adaptive_anchor.shape= torch.Size([513, 4, 20])
             
+            additional_information['frame']=batch["frame"]
             
             output = self.model(obs_traj, adaptive_anchor, pred_traj, addl_info=additional_information)
-            """
-            # 可视化
-            if cnt==1:
-                graph = torchviz.make_dot(output["recon_traj"], params=dict(self.model.named_parameters()))
-                graph.render("VAE_graph") # 保存计算图为 PDF 文件
-            """
 
             loss = output["loss_euclidean_ade"]
             loss[torch.isnan(loss)] = 0
@@ -330,8 +325,9 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             scene_mask, seq_start_end = batch["scene_mask"].cuda(non_blocking=True), batch["seq_start_end"].cuda(non_blocking=True)
 
             additional_information = {"scene_mask": scene_mask, "num_samples": self.hyper_params.num_samples}
+            additional_information['frame']=batch["frame"]
             output = self.model(obs_traj, adaptive_anchor, pred_traj, addl_info=additional_information)
-
+            
             recon_loss = output["loss_euclidean_fde"] * obs_traj.size(0)
             loss_batch += recon_loss.item()
 
@@ -352,6 +348,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             scene_mask, seq_start_end = batch["scene_mask"].cuda(non_blocking=True), batch["seq_start_end"].cuda(non_blocking=True)
 
             additional_information = {"scene_mask": scene_mask, "num_samples": self.hyper_params.num_samples}
+            additional_information['frame']=batch["frame"]
             output = self.model(obs_traj, adaptive_anchor, addl_info=additional_information)
 
             for metric in self.stats_func.keys():

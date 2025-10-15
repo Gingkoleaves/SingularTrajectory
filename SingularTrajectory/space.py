@@ -62,7 +62,7 @@ class SingularSpace(nn.Module):
         traj = self.traj_normalizer.denormalize(traj_norm)
         return traj
 
-    def to_Singular_space(self, traj, evec):
+    def to_Singular_space(self, traj, evec, neighbors_features=None):
         r"""Transform Euclidean trajectories to Singular space coordinates
 
         Args:
@@ -76,7 +76,7 @@ class SingularSpace(nn.Module):
         if self.hyper_params.vae_train:
             tdim = evec.size(0)
             # Use the VAE model to encode the trajectory
-            C = self.vae_model.encode_space(traj)
+            C = self.vae_model.encode_space(traj, neighbors_features)
             C = C.transpose(0,1)
             # print("after to singular C.shape",C.shape) # after to singular C.shape torch.Size([8, 206])
         else:
@@ -254,7 +254,7 @@ class SingularSpace(nn.Module):
         # Reuse values for anchor generation
         return pred_traj_norm, V_pred_trunc
 
-    def projection(self, obs_traj, pred_traj=None):
+    def projection(self, obs_traj, pred_traj=None, obs_neighbors_features=None):
         r"""Trajectory projection to the Singular space
 
         Args:
@@ -268,7 +268,7 @@ class SingularSpace(nn.Module):
         if self.hyper_params.vae_train:
             # Normalize trajectory
             obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
-            C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc).detach()
+            C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc,neighbors_features=obs_neighbors_features).detach()
             # print("after projection C_obs.shape=",C_obs.shape) # [8,206]
             C_pred = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc).detach() if pred_traj is not None else None
             return C_obs, C_pred

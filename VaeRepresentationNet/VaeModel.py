@@ -752,6 +752,18 @@ class E2EReductioner(nn.Module):
 
         self.Extender=Extender()
         self.linear_proj=nn.Linear(6,self.hidden_dim)
+        self.neighbor_proj=nn.Linear(7,self.hidden_dim)
+        """
+        self.neighbor_LSTM=nn.LSTM(
+            input_size=7,
+            hidden_size=self.hidden_dim,
+            num_layers=1,
+            batch_first=True
+        )
+        """
+        self.multiheadatt= nn.MultiheadAttention(self.hidden_dim, 2,batch_first=True)
+        self.merge_neighbor=nn.Linear(7+6,self.hidden_dim)
+        
         self.encoder_layer = nn.TransformerEncoderLayer(
             d_model=self.hidden_dim,
             nhead=self.nhead,
@@ -775,10 +787,35 @@ class E2EReductioner(nn.Module):
         self.fc4_pred = nn.Linear(self.hidden_dim*2, self.hidden_dim)
         self.fc_out_pred = nn.Linear(self.hidden_dim, self.t_pred*self.dim)
                         
-    def encode(self, x):
+    def encode(self, x, neighbors_features=None):
         B=x.shape[0]
         x=self.Extender.extend(x)    # 【batch,seqlen,6】
-        x=self.linear_proj(x)
+        x=self.linear_proj(x)        # [batch,seqlen,hidden_dim]
+        
+        """
+        # Trajectron++ way:
+        addi_features = torch.sum(neighbors_features,dim=-2)  # [206,8,7] batch,steps,hidden-vector
+        neighbor_aggr,_=self.neighbor_LSTM(addi_features) # [batch,seqlen,hidden_dim]
+        neighbor_aggr = neighbor_aggr[:, -1]  # 取最后时间步 [batch, hidden_dim]
+        
+        cls_tokens = self.cls_token.expand(B, 1, -1)  # [B, 1, hidden_dim]
+        x=torch.cat([cls_tokens,x],dim=1)
+        # print("x.shape=",x.shape) # [batch,seqlen+1,16]
+        x=self.transformer(x)        
+        x = x[:,0]       # 取cls
+        
+        x=torch.cat((x,neighbor_aggr),dim=-1)
+        """
+        
+        if neighbors_features is not None :
+            if neighbors_features.shape[2]>0: 
+                # print("neighbors_features.shape=",neighbors_features.shape) # [206,8,14,7] batch,steps,neighbors,hidden-vector
+                max_features = torch.max(neighbors_features, dim=-2)[0]  # [206, 8, 7]
+                max_features=self.neighbor_proj(max_features)
+                x=x+max_features              
+            else:
+                x=torch.zeros(x.shape[0],x.shape[1],self.hidden_dim).to(x.device)
+        
         
         cls_tokens = self.cls_token.expand(B, 1, -1)  # [B, 1, hidden_dim]
         x=torch.cat([cls_tokens,x],dim=1)
@@ -841,11 +878,11 @@ class E2EReductioner(nn.Module):
         out = out.reshape(S, B, self.dim*self.t_pred)
         return out
     
-    def encode_space(self, x):   # x=[batch,seqlen,2]
+    def encode_space(self, x,neighbors_features=None ):   # x=[batch,seqlen,2]
         r"""Encode the trajectory into the latent space
         """
         # print("x.shape=",x.shape)
-        mu, logvar = self.encode(x)
+        mu, logvar = self.encode(x, neighbors_features)
         z = self.reparameterize(mu, logvar)
         # print("z.requires_grad=", z.requires_grad, " grad_fn=", z.grad_fn)
         # print("encode_space.z.shape=",z.shape) # torch.Size([206, 8])
