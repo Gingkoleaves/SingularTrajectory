@@ -25,6 +25,7 @@ class SingularTrajectory(nn.Module):
         self.s = hyper_params.num_samples
         self.dim = hyper_params.traj_dim
         self.static_dist = hyper_params.static_dist
+        self.neighbor_Extractor=neighbor_Extractor()
         
         self.attention = nn.MultiheadAttention(embed_dim=self.k, num_heads=1, batch_first=True)
 
@@ -115,17 +116,22 @@ class SingularTrajectory(nn.Module):
         pred_s_traj_gt = pred_traj[~mask] if pred_traj is not None else None
         
         # get neighbors
-        obs_neighbors_feature,obs_neighbors_mask=neighbor_Extractor(obs_traj,addl_info['frame'])
+        obs_neighbors_feature= self.neighbor_Extractor.Extracte(obs_traj,addl_info['frame'])
         obs_m_neighbors_feature=obs_neighbors_feature[mask]
         obs_s_neighbors_feature=obs_neighbors_feature[~mask]
 
         # Projection
         # print("before projection pred_s_traj_gt.shape=",pred_s_traj_gt.shape) ([195, 12, 2])
-        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt,obs_neighbors_features=obs_m_neighbors_feature)
-        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt,obs_neighbors_features=obs_s_neighbors_feature)
+        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt,obs_neighbors_features=obs_m_neighbors_feature) # 这里需要改：实际上是两个vae【Modify】
+        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt,obs_neighbors_features=obs_s_neighbors_feature) # 这里需要改：实际上是两个vae【Modify】
+        
         # print("after projection C_s_obs.shape=",C_s_obs.shape)  [8,195]
         C_obs = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
         C_obs[:, mask], C_obs[:, ~mask] = C_m_obs, C_s_obs
+        
+        if pred_traj is not None:
+            C_pred = torch.zeros((self.k, n_ped), dtype=torch.float, device=pred_traj.device)
+            C_pred[:, mask], C_pred[:, ~mask] = C_m_pred_gt, C_s_pred_gt
 
         # Absolute coordinate
         obs_m_ori = self.Singular_space_m.traj_normalizer.traj_ori.squeeze(dim=1).T
