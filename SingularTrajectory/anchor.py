@@ -136,7 +136,10 @@ class AdaptiveAnchor(nn.Module):
         # print("pred_traj_norm.shape=",pred_traj_norm.shape) # ([19148, 12, 2])
         if self.hyper_params.vae_train:
             # Use the VAE model to encode the trajectory
-            C_pred = self.vae_model.encode_space(pred_traj_norm.cuda()).detach().cpu().numpy()
+            C_pred = self.vae_model.encode_space(pred_traj_norm.cuda())
+            if type(C_pred)==tuple:
+                C_pred,_,_=C_pred
+            C_pred=C_pred.detach().cpu().numpy()
         else:
             # Trajectory projection
             C_pred = self.to_Singular_space(pred_traj_norm, evec=V_pred_trunc).T.detach().numpy()

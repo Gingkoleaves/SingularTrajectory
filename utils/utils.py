@@ -65,6 +65,15 @@ def print_arguments(args, length=100, sep=': ', delim=' | '):
             cl += len(delim)
     print('')
 
+def kl_divergence_between_gaussians(mu1, logvar1, mu2, logvar2):
+    # 计算两个多维高斯分布 q1 ~ N(mu1, σ1^2), q2 ~ N(mu2, σ2^2) 的 KL 散度
+    var1 = logvar1.exp()
+    var2 = logvar2.exp()
+    kl = 0.5 * torch.sum(
+        logvar2 - logvar1 + (var1 + (mu1 - mu2).pow(2)) / var2 - 1,
+        dim=1
+    )
+    return kl.mean()  # batch平均
 
 def augment_trajectory(obs_traj, pred_traj, flip=True, reverse=True):
     r"""Flip and reverse the trajectory

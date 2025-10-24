@@ -23,7 +23,7 @@ class STTrainer:
         self.dataset_dir = hyper_params.dataset_dir + hyper_params.dataset + '/'
         self.checkpoint_dir = hyper_params.checkpoint_dir + '/' + args.tag + '/' + hyper_params.dataset + '/'
         print("Checkpoint dir:", self.checkpoint_dir)
-        self.log = {'train_loss': [], 'val_loss': [],'loss_eigentraj':[]}
+        self.log = {'train_loss': [], 'val_loss': [],'loss_eigentraj':[], 'loss_kldiv':[]}
         self.stats_func, self.stats_meter = None, None
         self.reset_metric()
 
@@ -80,6 +80,7 @@ class STTrainer:
             print("Min_val_epoch: {0}, Min_val_loss: {1:.8f}".format(np.array(self.log['val_loss']).argmin(),
                                                                      np.array(self.log['val_loss']).min()))
             print("The loss_eigentraj: {0:.8f}".format(np.array(self.log['loss_eigentraj'][-1])))
+            print("The loss_kldiv: {0:.8f}".format(np.array(self.log['loss_kldiv'][-1])))
             print(" ")
         print("Done.")
 
@@ -273,6 +274,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         self.model.train()
         loss_batch = 0
         loss_eigentraj_batch=0
+        loss_kldiv_batch = 0
 
         if self.loader_train.dataset.anchor is None:
             self.init_adaptive_anchor(self.loader_train.dataset)
@@ -294,10 +296,16 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             
             output = self.model(obs_traj, adaptive_anchor, pred_traj, addl_info=additional_information)
 
-            loss = output["loss_euclidean_ade"]
+            loss = output["loss_euclidean_ade"] 
+            kl_loss= output["loss_kl"]              
+            loss+=kl_loss
+            
             loss[torch.isnan(loss)] = 0
+            kl_loss[torch.isnan(loss)] = 0
+            
             loss_batch += loss.item()
             loss_eigentraj_batch+=output['loss_eigentraj'].item()
+            loss_kldiv_batch+=kl_loss.item()
 
             # torch.autograd.set_detect_anomaly(True)
             
@@ -310,6 +318,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
 
         self.log['train_loss'].append(loss_batch / len(self.loader_train))
         self.log['loss_eigentraj'].append(loss_eigentraj_batch/len(self.loader_train))
+        self.log['loss_kldiv'].append(loss_kldiv_batch/len(self.loader_train))
 
     @torch.no_grad()
     def valid(self, epoch):
@@ -330,9 +339,10 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             
             recon_loss = output["loss_euclidean_fde"] * obs_traj.size(0)
             loss_batch += recon_loss.item()
-
+            
+            # print("vaild kl_loss=",output["loss_kl"].item(),"\n") # 维持在0.05-0.5            
         num_ped = sum(self.loader_val.dataset.num_peds_in_seq)
-        self.log['val_loss'].append(loss_batch / num_ped)
+        self.log['val_loss'].append((loss_batch) / num_ped)
 
     @torch.no_grad()
     def test(self):

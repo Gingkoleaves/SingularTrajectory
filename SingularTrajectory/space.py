@@ -74,10 +74,10 @@ class SingularSpace(nn.Module):
 
         # print("to_Singular_space traj.shape=",traj.shape) torch.Size([319, 12, 2])
         if self.hyper_params.vae_train:
-            tdim = evec.size(0)
             # Use the VAE model to encode the trajectory
-            C = self.vae_model.encode_space(traj, neighbors_features)
+            C, mu, logvar = self.vae_model.encode_space(traj, neighbors_features)
             C = C.transpose(0,1)
+            C = (C,mu,logvar)
             # print("after to singular C.shape",C.shape) # after to singular C.shape torch.Size([8, 206])
         else:
             # Euclidean space -> Singular space
@@ -87,6 +87,8 @@ class SingularSpace(nn.Module):
         
         return C
 
+    # 实际上仅用于生成初始anchor，这里还是应当使用svd，要不然初始anchor就是一坨
+    # 并非！traineval调用的是fit，fit包含循环中的train，实际上只有第一个train的初始化是一坨
     def batch_to_Singular_space(self, traj, evec):
         r"""Transform a batch of Euclidean trajectories to Singular space coordinates
 
@@ -99,6 +101,7 @@ class SingularSpace(nn.Module):
         """
         # traj.shape= [20,batch,t_obs/t_pred,2]
         # print("traj.shape()=",traj.shape) # [20,9574,12,2]
+        
         if self.hyper_params.vae_train:
             # Use the VAE model to encode the trajectory
             b=traj.size(1)
@@ -114,7 +117,7 @@ class SingularSpace(nn.Module):
             traj=self.vae_model.batch_encode_space(traj)  
             traj=traj.permute(0,2,1)
             C=traj.reshape(-1,self.k,b)
-        else:
+        else:        
             # Euclidean space -> Singular space
             tdim = evec.size(0)
             M = traj.reshape(traj.size(0), traj.size(1), tdim).transpose(1, 2)
@@ -268,9 +271,11 @@ class SingularSpace(nn.Module):
         if self.hyper_params.vae_train:
             # Normalize trajectory
             obs_traj_norm, pred_traj_norm = self.normalize_trajectory(obs_traj, pred_traj)
-            C_obs = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc,neighbors_features=obs_neighbors_features).detach()
+            (C_obs,mu_obs,logvar_obs) = self.to_Singular_space(obs_traj_norm, evec=self.V_obs_trunc,neighbors_features=obs_neighbors_features) # 【Modify】建立两个encoder
+            C_obs=(C_obs.detach(),mu_obs.T,logvar_obs.T)
             # print("after projection C_obs.shape=",C_obs.shape) # [8,206]
-            C_pred = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc).detach() if pred_traj is not None else None
+            (C_pred,mu_pred,logvar_pred) = self.to_Singular_space(pred_traj_norm, evec=self.V_pred_trunc) if pred_traj is not None else (None,None,None) # 【Modify】建立两个encoder
+            C_pred=(C_pred,mu_pred.detach().T,logvar_pred.detach().T) if pred_traj is not None else (None,None,None)
             return C_obs, C_pred
         else:
             # Trajectory Projection

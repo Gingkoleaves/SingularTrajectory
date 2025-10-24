@@ -3,6 +3,7 @@ import torch.nn as nn
 from .anchor import AdaptiveAnchor
 from .space import SingularSpace
 from .neighbors import neighbor_Extractor
+from utils import kl_divergence_between_gaussians
 
 class SingularTrajectory(nn.Module):
     r"""The SingularTrajectory model
@@ -122,71 +123,143 @@ class SingularTrajectory(nn.Module):
 
         # Projection
         # print("before projection pred_s_traj_gt.shape=",pred_s_traj_gt.shape) ([195, 12, 2])
-        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt,obs_neighbors_features=obs_m_neighbors_feature) # 这里需要改：实际上是两个vae【Modify】
-        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt,obs_neighbors_features=obs_s_neighbors_feature) # 这里需要改：实际上是两个vae【Modify】
+        C_m_obs, C_m_pred_gt = self.Singular_space_m.projection(obs_m_traj, pred_m_traj_gt,obs_neighbors_features=obs_m_neighbors_feature) # 这里需要改：实际上是两个vae-encoder【Modify】
+        C_s_obs, C_s_pred_gt = self.Singular_space_s.projection(obs_s_traj, pred_s_traj_gt,obs_neighbors_features=obs_s_neighbors_feature) # 这里需要改：实际上是两个vae-encoder【Modify】
+        
+        # 获取mask中为True的数量
+        m_count = mask.sum().item()  # mask为True的数量
+        s_count = (~mask).sum().item()  # mask为False的数量
+        
+        m_obs_mu = torch.zeros(m_count, dtype=torch.float, device=obs_traj.device)
+        m_obs_logvar = torch.zeros(m_count, dtype=torch.float, device=obs_traj.device)
+        m_pred_mu = torch.zeros(m_count, dtype=torch.float, device=obs_traj.device)  
+        m_pred_logvar = torch.zeros(m_count, dtype=torch.float, device=obs_traj.device)
+        s_obs_mu = torch.zeros(s_count, dtype=torch.float, device=obs_traj.device)
+        s_obs_logvar = torch.zeros(s_count, dtype=torch.float, device=obs_traj.device)
+        s_pred_mu = torch.zeros(s_count, dtype=torch.float, device=obs_traj.device)
+        s_pred_logvar = torch.zeros(s_count, dtype=torch.float, device=obs_traj.device)
+        
+        if type(C_m_obs)==tuple:
+            C_m_obs,m_obs_mu,m_obs_logvar = C_m_obs
+            C_m_pred_gt,m_pred_mu,m_pred_logvar=C_m_pred_gt
+        
+        if type(C_s_obs)==tuple:
+            C_s_obs,s_obs_mu,s_obs_logvar = C_s_obs
+            C_s_pred_gt,s_pred_mu,s_pred_logvar=C_s_pred_gt
+            
+        obs_mu = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
+        obs_logvar = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
+        pred_mu = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
+        pred_logvar = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
+                
+        if m_obs_mu is not None:
+            obs_mu[:, mask], obs_mu[:, ~mask] = m_obs_mu, s_obs_mu
+            obs_logvar[:, mask], obs_logvar[:, ~mask] = m_obs_logvar, s_obs_logvar
+        
+        if C_m_pred_gt is not None:
+            pred_mu[:, mask], pred_mu[:, ~mask] = m_pred_mu, s_pred_mu
+            pred_logvar[:, mask], pred_logvar[:, ~mask] = m_pred_logvar, s_pred_logvar
         
         # print("after projection C_s_obs.shape=",C_s_obs.shape)  [8,195]
         C_obs = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
         C_obs[:, mask], C_obs[:, ~mask] = C_m_obs, C_s_obs
         
+        # 实际上，只在train时考虑用pred的预测结果，vaild和test均要使用obs的预测结果
+        # 同样的，只有train时用到kl-loss，vaild和test都应该以ade/fde评判
         if pred_traj is not None:
             C_pred = torch.zeros((self.k, n_ped), dtype=torch.float, device=pred_traj.device)
             C_pred[:, mask], C_pred[:, ~mask] = C_m_pred_gt, C_s_pred_gt
+            
+            # Absolute coordinate
+            pred_m_ori=pred_m_traj_gt[:,[-1]].squeeze(dim=1).T # 这里需要改：要注意是pred轨迹的尾巴，可以在space里判断如果是train就所有数据都是pred的内容【Modify】
+            pred_s_ori=pred_s_traj_gt[:,[-1]].squeeze(dim=1).T # 这里需要改：要注意是pred轨迹的尾巴，可以在space里判断如果是train就所有数据都是pred的内容【Modify】
+            pred_ori = torch.zeros((2, n_ped), dtype=torch.float, device=pred_traj.device)
+            pred_ori[:, mask], pred_ori[:, ~mask] = pred_m_ori, pred_s_ori
+            pred_ori -= pred_ori.mean(dim=1, keepdim=True)
 
-        # Absolute coordinate
-        obs_m_ori = self.Singular_space_m.traj_normalizer.traj_ori.squeeze(dim=1).T
-        obs_s_ori = self.Singular_space_s.traj_normalizer.traj_ori.squeeze(dim=1).T
-        obs_ori = torch.zeros((2, n_ped), dtype=torch.float, device=obs_traj.device)
-        obs_ori[:, mask], obs_ori[:, ~mask] = obs_m_ori, obs_s_ori
-        obs_ori -= obs_ori.mean(dim=1, keepdim=True)
+            ### Adaptive anchor per agent
+            # print("before permute adaptive_anchor.shape=",adaptive_anchor.shape)  # torch.Size([512, 8, 20])
+            # 这里anchor是基于所有obs_traj的，但不用调整
+            C_anchor = adaptive_anchor.permute(1, 0, 2)
+            addl_info["anchor"] = C_anchor.detach().clone()
+            # print("after permute C_anchor.shape=",C_anchor.shape) # torch.Size([8, 512, 20])
 
-        ### Adaptive anchor per agent
-        # print("before permute adaptive_anchor.shape=",adaptive_anchor.shape)  # torch.Size([512, 8, 20])
-        C_anchor = adaptive_anchor.permute(1, 0, 2)
-        addl_info["anchor"] = C_anchor.detach().clone()
-        # print("after permute C_anchor.shape=",C_anchor.shape) # torch.Size([8, 512, 20])
+            # C_obs=nolinear_combination(C_obs)
+            input_data = self.hook_func.model_forward_pre_hook(C_pred, pred_ori, addl_info)
+            output_data = self.hook_func.model_forward(input_data, self.baseline_model)
+            C_pred_refine = self.hook_func.model_forward_post_hook(output_data, addl_info) * 0.1
 
-        # Trajectory prediction
-        
-        # 对 C_obs 进行自注意力
-        # C_obs: [k, n_ped] -> [n_ped, k] for attention, attention input (batch,seq_len,latent_dim)
-        C_obs_t = C_obs.T.unsqueeze(0)  # [1, n_ped, k]
-        attn_out, _ = self.attention(C_obs_t, C_obs_t, C_obs_t)
-        C_obs = attn_out.squeeze(0).T  # [k, n_ped]
-        # print("before diffusion.shape=",C_obs.shape) #[4,512]
-        
-        # C_obs=nolinear_combination(C_obs)
-        input_data = self.hook_func.model_forward_pre_hook(C_obs, obs_ori, addl_info)
-        output_data = self.hook_func.model_forward(input_data, self.baseline_model)
-        C_pred_refine = self.hook_func.model_forward_post_hook(output_data, addl_info) * 0.1
+            # print("C_pred_refine.shape=",C_pred_refine.shape) # torch.Size([8, 517, 20])
+            # anchor【隐藏表示】加上微调值
+            C_m_pred = self.adaptive_anchor_m(C_pred_refine[:, mask], C_anchor[:, mask])
+            C_s_pred = self.adaptive_anchor_s(C_pred_refine[:, ~mask], C_anchor[:, ~mask])
 
-        # print("C_pred_refine.shape=",C_pred_refine.shape) # torch.Size([8, 517, 20])
-        C_m_pred = self.adaptive_anchor_m(C_pred_refine[:, mask], C_anchor[:, mask])
-        C_s_pred = self.adaptive_anchor_s(C_pred_refine[:, ~mask], C_anchor[:, ~mask])
+            # Reconstruction
+            # print("before reconstruction C_m_pred.shape=",C_m_pred.shape) # torch.Size([8, 206, 20])
+            pred_m_traj_recon = self.Singular_space_m.reconstruction(C_m_pred)
+            pred_s_traj_recon = self.Singular_space_s.reconstruction(C_s_pred)
+            pred_traj_recon = torch.zeros((self.s, n_ped, self.t_pred, self.dim), dtype=torch.float, device=obs_traj.device)
+            pred_traj_recon[:, mask], pred_traj_recon[:, ~mask] = pred_m_traj_recon, pred_s_traj_recon
 
-        # Reconstruction
-        # print("before reconstruction C_m_pred.shape=",C_m_pred.shape) # torch.Size([8, 206, 20])
-        pred_m_traj_recon = self.Singular_space_m.reconstruction(C_m_pred)
-        pred_s_traj_recon = self.Singular_space_s.reconstruction(C_s_pred)
-        pred_traj_recon = torch.zeros((self.s, n_ped, self.t_pred, self.dim), dtype=torch.float, device=obs_traj.device)
-        pred_traj_recon[:, mask], pred_traj_recon[:, ~mask] = pred_m_traj_recon, pred_s_traj_recon
+            output = {"recon_traj": pred_traj_recon}     
+            
+        else:            
+            # Absolute coordinate
+            obs_m_ori = self.Singular_space_m.traj_normalizer.traj_ori.squeeze(dim=1).T
+            obs_s_ori = self.Singular_space_s.traj_normalizer.traj_ori.squeeze(dim=1).T
+            obs_ori = torch.zeros((2, n_ped), dtype=torch.float, device=obs_traj.device)
+            obs_ori[:, mask], obs_ori[:, ~mask] = obs_m_ori, obs_s_ori
+            obs_ori -= obs_ori.mean(dim=1, keepdim=True)
 
-        output = {"recon_traj": pred_traj_recon}
+            ### Adaptive anchor per agent
+            # print("before permute adaptive_anchor.shape=",adaptive_anchor.shape)  # torch.Size([512, 8, 20])
+            C_anchor = adaptive_anchor.permute(1, 0, 2)
+            addl_info["anchor"] = C_anchor.detach().clone()
+            # print("after permute C_anchor.shape=",C_anchor.shape) # torch.Size([8, 512, 20])
+
+            # Trajectory prediction
+
+            # 对 C_obs 进行自注意力
+            # C_obs: [k, n_ped] -> [n_ped, k] for attention, attention input (batch,seq_len,latent_dim)
+            C_obs_t = C_obs.T.unsqueeze(0)  # [1, n_ped, k]
+            attn_out, _ = self.attention(C_obs_t, C_obs_t, C_obs_t)
+            C_obs = attn_out.squeeze(0).T  # [k, n_ped]
+            # print("before diffusion.shape=",C_obs.shape) #[4,512]
+
+            # C_obs=nolinear_combination(C_obs)
+            input_data = self.hook_func.model_forward_pre_hook(C_obs, obs_ori, addl_info)
+            output_data = self.hook_func.model_forward(input_data, self.baseline_model)
+            C_pred_refine = self.hook_func.model_forward_post_hook(output_data, addl_info) * 0.1
+
+            # print("C_pred_refine.shape=",C_pred_refine.shape) # torch.Size([8, 517, 20])
+            C_m_pred = self.adaptive_anchor_m(C_pred_refine[:, mask], C_anchor[:, mask])
+            C_s_pred = self.adaptive_anchor_s(C_pred_refine[:, ~mask], C_anchor[:, ~mask])
+
+            # Reconstruction
+            # print("before reconstruction C_m_pred.shape=",C_m_pred.shape) # torch.Size([8, 206, 20])
+            pred_m_traj_recon = self.Singular_space_m.reconstruction(C_m_pred)
+            pred_s_traj_recon = self.Singular_space_s.reconstruction(C_s_pred)
+            pred_traj_recon = torch.zeros((self.s, n_ped, self.t_pred, self.dim), dtype=torch.float, device=obs_traj.device)
+            pred_traj_recon[:, mask], pred_traj_recon[:, ~mask] = pred_m_traj_recon, pred_s_traj_recon
+
+            output = {"recon_traj": pred_traj_recon}
 
         if pred_traj is not None:
-            C_pred = torch.zeros((self.k, n_ped, self.s), dtype=torch.float, device=obs_traj.device)
-            C_pred[:, mask], C_pred[:, ~mask] = C_m_pred, C_s_pred
+            # 预测值
+            C_pred_esti = torch.zeros((self.k, n_ped, self.s), dtype=torch.float, device=obs_traj.device)
+            C_pred_esti[:, mask], C_pred_esti[:, ~mask] = C_m_pred, C_s_pred
 
-            # Low-rank approximation for gt trajectory
+            # Low-rank approximation for gt trajectory；真实值
             C_pred_gt = torch.zeros((self.k, n_ped), dtype=torch.float, device=obs_traj.device)
             C_pred_gt[:, mask], C_pred_gt[:, ~mask] = C_m_pred_gt, C_s_pred_gt
             C_pred_gt = C_pred_gt.detach()
 
             # Loss calculation
-            error_coefficient = (C_pred - C_pred_gt.unsqueeze(dim=-1)).norm(p=2, dim=0)
+            error_coefficient = (C_pred_esti - C_pred_gt.unsqueeze(dim=-1)).norm(p=2, dim=0)
             error_displacement = (pred_traj_recon - pred_traj.unsqueeze(dim=0)).norm(p=2, dim=-1)
             output["loss_eigentraj"] = error_coefficient.min(dim=-1)[0].mean()
             output["loss_euclidean_ade"] = error_displacement.mean(dim=-1).min(dim=0)[0].mean()
             output["loss_euclidean_fde"] = error_displacement[:, :, -1].min(dim=0)[0].mean()
+            output["loss_kl"]=kl_divergence_between_gaussians(obs_mu.T,obs_logvar.T,pred_mu.T,pred_logvar.T)
 
         return output
