@@ -662,7 +662,7 @@ class SimulaSVDReductioner(nn.Module):
         h3 = F.relu(self.fc3_obs(z))
         h3 = F.relu(self.fc4_obs(h3))
         out = self.fc_out_obs(h3)
-        return out.detach()
+        return out
 
     def decode_pred(self, z):
         h3 = F.relu(self.fc3_pred(z))
@@ -840,7 +840,7 @@ class E2EReductioner(nn.Module):
         h3 = F.relu(self.fc3_obs(z))
         h3 = F.relu(self.fc4_obs(h3))
         out = self.fc_out_obs(h3)
-        return out.detach()
+        return out
     
     def batch_decode_obs(self,z):  
         S, B, L = z.shape
