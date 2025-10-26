@@ -23,7 +23,7 @@ class STTrainer:
         self.dataset_dir = hyper_params.dataset_dir + hyper_params.dataset + '/'
         self.checkpoint_dir = hyper_params.checkpoint_dir + '/' + args.tag + '/' + hyper_params.dataset + '/'
         print("Checkpoint dir:", self.checkpoint_dir)
-        self.log = {'train_loss': [], 'val_loss': [],'loss_eigentraj':[], 'loss_kldiv':[]}
+        self.log = {'train_loss': [], 'val_loss': [], 'loss_eigentraj': [], 'loss_kldiv': [], 'mu_gap': []}
         self.stats_func, self.stats_meter = None, None
         self.reset_metric()
 
@@ -296,9 +296,12 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             
             output = self.model(obs_traj, adaptive_anchor, pred_traj, addl_info=additional_information)
 
-            loss = output["loss_euclidean_ade"] 
-            kl_loss= output["loss_kl"]              
-            loss+=kl_loss
+            loss = output["loss_euclidean_ade"]
+            kl_loss = output["loss_kl"]
+
+            # KL fixed beta (no warmup)
+            beta_t = getattr(self.hyper_params, "kl_beta", 1.0)
+            loss += beta_t * kl_loss
             
             loss[torch.isnan(loss)] = 0
             kl_loss[torch.isnan(loss)] = 0
@@ -317,8 +320,13 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             self.optimizer.step()
 
         self.log['train_loss'].append(loss_batch / len(self.loader_train))
-        self.log['loss_eigentraj'].append(loss_eigentraj_batch/len(self.loader_train))
-        self.log['loss_kldiv'].append(loss_kldiv_batch/len(self.loader_train))
+        self.log['loss_eigentraj'].append(loss_eigentraj_batch / len(self.loader_train))
+        self.log['loss_kldiv'].append(loss_kldiv_batch / len(self.loader_train))
+        # Aggregate mu_gap if provided by model output
+        if 'mu_gap' in output:
+            # 这里累加的是最后一个 batch 的 mu_gap，通常够用于趋势观察
+            self.log.setdefault('mu_gap', [])
+            self.log['mu_gap'].append(output['mu_gap'].item())
 
     @torch.no_grad()
     def valid(self, epoch):

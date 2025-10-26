@@ -166,7 +166,7 @@ class SingularTrajectory(nn.Module):
         
         # 实际上，只在train时考虑用pred的预测结果，vaild和test均要使用obs的预测结果
         # 同样的，只有train时用到kl-loss，vaild和test都应该以ade/fde评判
-        if pred_traj is not None:
+        if self.training:
             C_pred = torch.zeros((self.k, n_ped), dtype=torch.float, device=pred_traj.device)
             C_pred[:, mask], C_pred[:, ~mask] = C_m_pred_gt, C_s_pred_gt
             
@@ -219,13 +219,6 @@ class SingularTrajectory(nn.Module):
 
             # Trajectory prediction
 
-            # 对 C_obs 进行自注意力
-            # C_obs: [k, n_ped] -> [n_ped, k] for attention, attention input (batch,seq_len,latent_dim)
-            C_obs_t = C_obs.T.unsqueeze(0)  # [1, n_ped, k]
-            attn_out, _ = self.attention(C_obs_t, C_obs_t, C_obs_t)
-            C_obs = attn_out.squeeze(0).T  # [k, n_ped]
-            # print("before diffusion.shape=",C_obs.shape) #[4,512]
-
             # C_obs=nolinear_combination(C_obs)
             input_data = self.hook_func.model_forward_pre_hook(C_obs, obs_ori, addl_info)
             output_data = self.hook_func.model_forward(input_data, self.baseline_model)
@@ -260,6 +253,11 @@ class SingularTrajectory(nn.Module):
             output["loss_eigentraj"] = error_coefficient.min(dim=-1)[0].mean()
             output["loss_euclidean_ade"] = error_displacement.mean(dim=-1).min(dim=0)[0].mean()
             output["loss_euclidean_fde"] = error_displacement[:, :, -1].min(dim=0)[0].mean()
-            output["loss_kl"]=kl_divergence_between_gaussians(obs_mu.T,obs_logvar.T,pred_mu.T,pred_logvar.T)
+            kl = kl_divergence_between_gaussians(obs_mu.T, obs_logvar.T, pred_mu.T, pred_logvar.T)
+            with torch.no_grad():
+                mu_gap = (obs_mu.T - pred_mu.T).pow(2).sum(dim=1).sqrt().mean()
+            output["loss_kl"] = kl
+            output["mu_gap"] = mu_gap
+
 
         return output

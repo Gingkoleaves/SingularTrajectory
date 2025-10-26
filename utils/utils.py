@@ -67,10 +67,13 @@ def print_arguments(args, length=100, sep=': ', delim=' | '):
 
 def kl_divergence_between_gaussians(mu1, logvar1, mu2, logvar2):
     # 计算两个多维高斯分布 q1 ~ N(mu1, σ1^2), q2 ~ N(mu2, σ2^2) 的 KL 散度
-    var1 = logvar1.exp()
-    var2 = logvar2.exp()
+    # 数值稳定：对 logvar 做截断并为分母添加 epsilon
+    logvar1_c = logvar1.clamp(min=-6.0, max=6.0)
+    logvar2_c = logvar2.clamp(min=-6.0, max=6.0)
+    var1 = logvar1_c.exp()
+    var2 = logvar2_c.exp() + 1e-6
     kl = 0.5 * torch.sum(
-        logvar2 - logvar1 + (var1 + (mu1 - mu2).pow(2)) / var2 - 1,
+        (logvar2_c - logvar1_c) + (var1 + (mu1 - mu2).pow(2)) / var2 - 1,
         dim=1
     )
     return kl.mean()  # batch平均
