@@ -263,7 +263,10 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         predictor_model = base_model(cfg).cuda()
         eigentraj_model = model(baseline_model=predictor_model, hook_func=hook_func, hyper_params=hyper_params,args=args).cuda()
         self.model = eigentraj_model
+        self.kl_warmup_epochs = hyper_params.kl_warmup_epochs
         self.optimizer = torch.optim.AdamW(params=self.model.parameters(), lr=hyper_params.lr,
+                                           weight_decay=hyper_params.weight_decay)
+        self.kl_optimizer = torch.optim.Adam(params=self.model.parameters(), lr=hyper_params.lr,
                                            weight_decay=hyper_params.weight_decay)
 
         if hyper_params.lr_schd:
@@ -279,6 +282,9 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
 
         if self.loader_train.dataset.anchor is None:
             self.init_adaptive_anchor(self.loader_train.dataset)
+        
+        self.kl_warmup_epochs = getattr(self.hyper_params, "kl_warmup_epochs", 50)  # KL退火周期
+        self.kl_active = False  # KL损失是否开始参与训练
 
         for cnt, batch in enumerate(tqdm(self.loader_train, desc=f'Train Epoch {epoch}', mininterval=1)):
             obs_traj, pred_traj = batch["obs_traj"].cuda(non_blocking=True), batch["pred_traj"].cuda(non_blocking=True)
@@ -300,26 +306,49 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
             loss = output["loss_euclidean_ade"]
             kl_loss = output["loss_kl"]
 
-            # KL fixed beta (no warmup)
-            beta_t = getattr(self.hyper_params, "kl_beta", 1.0)
-            
-            loss[torch.isnan(loss)] = 0
-            kl_loss[torch.isnan(loss)] = 0
-            
-            loss += beta_t * kl_loss
+            # KL退火策略
+            if epoch < self.kl_warmup_epochs:
+                # 退火阶段：KL损失权重从0线性增加到1
+                beta_t = epoch / self.kl_warmup_epochs
+                kl_weight = beta_t
+                self.kl_active = False  # 退火阶段KL不独立BP
+            else:
+                # 退火完成：KL损失权重固定为1，开始独立BP
+                beta_t = 1.0
+                kl_weight = 1.0
+                self.kl_active = True
+
+            # 计算加权后的KL损失
+            weighted_kl_loss = kl_weight * kl_loss
+
+            if not self.kl_active:
+                # 退火阶段：KL损失与主损失一起用主优化器更新（受lr_sched影响）
+                total_loss = loss + weighted_kl_loss
+                total_loss.backward()
+                if self.hyper_params.clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hyper_params.clip_grad)
+                self.optimizer.step()
+
+            else:
+                # 退火完成后：主损失用主优化器，KL损失用独立优化器
+                # 1. 主损失反向传播（受lr_sched影响）
+                loss.backward(retain_graph=True)
+                if self.hyper_params.clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hyper_params.clip_grad)
+                self.optimizer.step()
+
+                # 清空主损失的梯度，为KL损失准备
+                self.kl_optimizer.zero_grad()
+
+                # 2. KL损失反向传播（固定学习率，不受lr_sched影响）
+                weighted_kl_loss.backward()
+                if self.hyper_params.clip_grad is not None:
+                    torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hyper_params.clip_grad)
+                self.kl_optimizer.step()
             
             loss_batch += loss.item()
             loss_eigentraj_batch+=output['loss_eigentraj'].item()
             loss_kldiv_batch+=kl_loss.item()
-
-            # torch.autograd.set_detect_anomaly(True)
-            
-            # print("Computing loss in {}!".format(cnt))
-            # print("loss.requires_grad=", loss.requires_grad, " grad_fn=", loss.grad_fn)
-            loss.backward(retain_graph=False)
-            if self.hyper_params.clip_grad is not None:
-                torch.nn.utils.clip_grad_norm_(self.model.parameters(), self.hyper_params.clip_grad)
-            self.optimizer.step()
 
         self.log['train_loss'].append(loss_batch / len(self.loader_train))
         self.log['loss_eigentraj'].append(loss_eigentraj_batch / len(self.loader_train))

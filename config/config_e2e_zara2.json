@@ -25,8 +25,9 @@
 	"clip_grad": 10,
 	"lr_schd": true,
 	"lr_schd_step": 8,
-	"lr_schd_gamma": 0.8,
+	"lr_schd_gamma": 0.5,
 	
 	"vae_train":true,
-	"kl_beta":0.3
+	"kl_beta":0.3,
+	"kl_warmup_epochs":8
 }

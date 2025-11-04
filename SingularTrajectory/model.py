@@ -166,7 +166,7 @@ class SingularTrajectory(nn.Module):
         
         # 实际上，只在train时考虑用pred的预测结果，vaild和test均要使用obs的预测结果
         # 同样的，只有train时用到kl-loss，vaild和test都应该以ade/fde评判
-        if pred_traj is not None:
+        if self.training:
             C_pred = torch.zeros((self.k, n_ped), dtype=torch.float, device=pred_traj.device)
             C_pred[:, mask], C_pred[:, ~mask] = C_m_pred_gt, C_s_pred_gt
             
@@ -253,7 +253,7 @@ class SingularTrajectory(nn.Module):
             output["loss_eigentraj"] = error_coefficient.min(dim=-1)[0].mean()
             output["loss_euclidean_ade"] = error_displacement.mean(dim=-1).min(dim=0)[0].mean()
             output["loss_euclidean_fde"] = error_displacement[:, :, -1].min(dim=0)[0].mean()
-            kl = kl_divergence_between_gaussians(obs_mu.T, obs_logvar.T, pred_mu.T, pred_logvar.T)
+            kl = kl_divergence_between_gaussians(obs_mu.T, obs_logvar.T, pred_mu.detach().T, pred_logvar.detach().T)
             with torch.no_grad():
                 mu_gap = (obs_mu.T - pred_mu.T).pow(2).sum(dim=1).sqrt().mean()
             output["loss_kl"] = kl
