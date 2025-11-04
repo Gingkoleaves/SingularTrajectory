@@ -757,11 +757,11 @@ class E2EReductioner(nn.Module):
         # Fusion heads
         self.merge = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
         self.merge_obs = nn.Sequential(
-            nn.Linear(2 * self.hidden_dim, 2 * self.hidden_dim),
+            nn.Linear(16+  self.hidden_dim, 2 * self.hidden_dim),
             nn.ReLU(),
             nn.Linear(2 * self.hidden_dim, self.hidden_dim),
         )
-        self.merge_pred = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
+        self.merge_pred = nn.Linear(16+  self.hidden_dim, self.hidden_dim)
 
         # Separate encoder layers for obs (student) and pred
         self.encoder_layer_obs = nn.TransformerEncoderLayer(
@@ -781,8 +781,8 @@ class E2EReductioner(nn.Module):
 
         self.cls_token_obs = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))  # 使用CLS token学习特征，而非mean
         self.cls_token_pred = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))  # 使用CLS token学习特征，而非mean
-        self.transformer_obs = nn.TransformerEncoder(self.encoder_layer_obs, num_layers=4)
-        self.transformer_pred = nn.TransformerEncoder(self.encoder_layer_pred, num_layers=self.num_layers)
+        self.transformer_obs = nn.TransformerEncoder(self.encoder_layer_obs, num_layers=2)
+        self.transformer_pred = nn.TransformerEncoder(self.encoder_layer_pred, num_layers=1)
 
         self.fc_mu_obs = nn.Linear(self.hidden_dim, self.latent_dim)
         self.fc_logvar_obs = nn.Linear(self.hidden_dim, self.latent_dim)

@@ -24,8 +24,9 @@
 	"weight_decay": 0.0001,
 	"clip_grad": 10,
 	"lr_schd": true,
-	"lr_schd_step": 64,
-	"lr_schd_gamma": 0.5,
+	"lr_schd_step": 8,
+	"lr_schd_gamma": 0.8,
 	
-	"vae_train":true
+	"vae_train":true,
+	"kl_beta":0.3
 }

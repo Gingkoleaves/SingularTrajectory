@@ -166,7 +166,7 @@ class SingularTrajectory(nn.Module):
         
         # 实际上，只在train时考虑用pred的预测结果，vaild和test均要使用obs的预测结果
         # 同样的，只有train时用到kl-loss，vaild和test都应该以ade/fde评判
-        if self.training:
+        if pred_traj is not None:
             C_pred = torch.zeros((self.k, n_ped), dtype=torch.float, device=pred_traj.device)
             C_pred[:, mask], C_pred[:, ~mask] = C_m_pred_gt, C_s_pred_gt
             

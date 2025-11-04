@@ -81,6 +81,7 @@ class STTrainer:
                                                                      np.array(self.log['val_loss']).min()))
             print("The loss_eigentraj: {0:.8f}".format(np.array(self.log['loss_eigentraj'][-1])))
             print("The loss_kldiv: {0:.8f}".format(np.array(self.log['loss_kldiv'][-1])))
+            print("The mu_gap: {0:.8f}".format(np.array(self.log['mu_gap'][-1])))
             print(" ")
         print("Done.")
 
@@ -301,10 +302,11 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
 
             # KL fixed beta (no warmup)
             beta_t = getattr(self.hyper_params, "kl_beta", 1.0)
-            loss += beta_t * kl_loss
             
             loss[torch.isnan(loss)] = 0
             kl_loss[torch.isnan(loss)] = 0
+            
+            loss += beta_t * kl_loss
             
             loss_batch += loss.item()
             loss_eigentraj_batch+=output['loss_eigentraj'].item()
@@ -322,6 +324,7 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         self.log['train_loss'].append(loss_batch / len(self.loader_train))
         self.log['loss_eigentraj'].append(loss_eigentraj_batch / len(self.loader_train))
         self.log['loss_kldiv'].append(loss_kldiv_batch / len(self.loader_train))
+        
         # Aggregate mu_gap if provided by model output
         if 'mu_gap' in output:
             # 这里累加的是最后一个 batch 的 mu_gap，通常够用于趋势观察
