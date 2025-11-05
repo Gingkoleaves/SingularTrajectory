@@ -25,7 +25,7 @@ class neighbor_Extractor(nn.Module):
     """
     def __init__(self):
         super().__init__();
-        self.hidden_dim = 16
+        self.hidden_dim = 32
         self.neighbor_LSTM=nn.LSTM(
             input_size=7,
             hidden_size=self.hidden_dim,

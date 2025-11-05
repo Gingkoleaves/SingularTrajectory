@@ -747,7 +747,7 @@ class E2EReductioner(nn.Module):
         self.dim = hyper_params.traj_dim
         self.hidden_dim = 32
         self.latent_dim = hyper_params.k
-        self.nhead = 4
+        self.nhead = 2
         self.num_layers = 3
 
         self.Extender = Extender()
@@ -757,32 +757,32 @@ class E2EReductioner(nn.Module):
         # Fusion heads
         self.merge = nn.Linear(2 * self.hidden_dim, self.hidden_dim)
         self.merge_obs = nn.Sequential(
-            nn.Linear(16+  self.hidden_dim, 2 * self.hidden_dim),
+            nn.Linear(self.hidden_dim, 2 * self.hidden_dim),
             nn.ReLU(),
             nn.Linear(2 * self.hidden_dim, self.hidden_dim),
         )
-        self.merge_pred = nn.Linear(16+  self.hidden_dim, self.hidden_dim)
+        self.merge_pred = nn.Linear(self.hidden_dim, self.hidden_dim)
 
         # Separate encoder layers for obs (student) and pred
-        self.encoder_layer_obs = nn.TransformerEncoderLayer(
+        self.encoder_layer_obs = nn.TransformerDecoderLayer(
             d_model=self.hidden_dim,
             nhead=self.nhead,
-            dim_feedforward=self.hidden_dim * 4,
+            dim_feedforward=self.hidden_dim,
             dropout=0.1,
-            batch_first=True   # [B, T, C]
+            batch_first=True
         )
-        self.encoder_layer_pred = nn.TransformerEncoderLayer(
+        self.encoder_layer_pred = nn.TransformerDecoderLayer(
             d_model=self.hidden_dim,
             nhead=self.nhead,
-            dim_feedforward=self.hidden_dim * 2,
+            dim_feedforward=self.hidden_dim,
             dropout=0.1,
             batch_first=True
         )
 
         self.cls_token_obs = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))  # 使用CLS token学习特征，而非mean
         self.cls_token_pred = nn.Parameter(torch.zeros(1, 1, self.hidden_dim))  # 使用CLS token学习特征，而非mean
-        self.transformer_obs = nn.TransformerEncoder(self.encoder_layer_obs, num_layers=2)
-        self.transformer_pred = nn.TransformerEncoder(self.encoder_layer_pred, num_layers=1)
+        self.transformer_obs = nn.TransformerDecoder(self.encoder_layer_obs, num_layers=2)
+        self.transformer_pred = nn.TransformerDecoder(self.encoder_layer_pred, num_layers=1)
 
         self.fc_mu_obs = nn.Linear(self.hidden_dim, self.latent_dim)
         self.fc_logvar_obs = nn.Linear(self.hidden_dim, self.latent_dim)
@@ -800,8 +800,15 @@ class E2EReductioner(nn.Module):
         self.fc_out_pred = nn.Linear(self.hidden_dim, self.t_pred*self.dim)
                         
     def encode(self, x, neighbors_features=None):
-        B=x.shape[0]
+        B, T, C = x.shape
         Steps=x.shape[-2]
+        
+        if B == 0 or T == 0:
+            # 返回空的mu和logvar
+            empty_mu = torch.zeros(B, self.latent_dim).to(x.device)
+            empty_logvar = torch.zeros(B, self.latent_dim).to(x.device)
+            return empty_mu, empty_logvar
+        
         # print("Vaemodel l797:step=",Steps,'\n') # 2
         
         x=self.Extender.extend(x)    # 【batch,seqlen,6】
@@ -828,29 +835,28 @@ class E2EReductioner(nn.Module):
                 if Steps==self.t_obs:
                     cls_tokens = self.cls_token_obs.expand(B, 1, -1)  # [B, 1, hidden_dim]
                     x=torch.cat([cls_tokens,x],dim=1)
+                    if neighbors_features.dim() == 2:
+                        neighbors_features = neighbors_features.unsqueeze(1)  # [B, 1, hidden_dim]
                     # print("x.shape=",x.shape) # [batch,seqlen+1,16]
-                    x=self.transformer_obs(x)        
+                    x=self.transformer_obs(tgt=x,memory=neighbors_features)        
                     x = x[:,0]       # 取cls
-
-                    x=torch.cat((x,neighbors_features),dim=-1) #[B,hidden_dim*2]
                     x=self.merge_obs(x) 
                 else:
                     cls_tokens = self.cls_token_pred.expand(B, 1, -1)  # [B, 1, hidden_dim]
                     x=torch.cat([cls_tokens,x],dim=1)
+                    if neighbors_features.dim() == 2:
+                        neighbors_features = neighbors_features.unsqueeze(1)  # [B, 1, hidden_dim]
                     # print("x.shape=",x.shape) # [batch,seqlen+1,16]
-                    x=self.transformer_pred(x)        
+                    x=self.transformer_pred(tgt=x,memory=neighbors_features)        
                     x = x[:,0]       # 取cls
-
-                    x=torch.cat((x,neighbors_features),dim=-1) #[B,hidden_dim*2]
                     x=self.merge_pred(x) 
             else:
-                x=torch.zeros(x.shape[0],self.hidden_dim).to(x.device)
-                
+                x=torch.zeros(x.shape[0],self.hidden_dim).to(x.device)             
         else:
             cls_tokens = self.cls_token_obs.expand(B, 1, -1)  # [B, 1, hidden_dim]
             x=torch.cat([cls_tokens,x],dim=1)
             # print("x.shape=",x.shape) # [batch,13,16]
-            x=self.transformer_obs(x)        
+            x=self.transformer_obs(tgt=x,memory=x)        
             x = x[:,0]       # 取cls           
 
         if Steps==self.t_obs:
