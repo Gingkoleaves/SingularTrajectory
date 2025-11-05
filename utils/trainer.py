@@ -264,9 +264,10 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         eigentraj_model = model(baseline_model=predictor_model, hook_func=hook_func, hyper_params=hyper_params,args=args).cuda()
         self.model = eigentraj_model
         self.kl_warmup_epochs = hyper_params.kl_warmup_epochs
+        self.kl_lr = hyper_params.kl_lr
         self.optimizer = torch.optim.AdamW(params=self.model.parameters(), lr=hyper_params.lr,
                                            weight_decay=hyper_params.weight_decay)
-        self.kl_optimizer = torch.optim.Adam(params=self.model.parameters(), lr=hyper_params.lr,
+        self.kl_optimizer = torch.optim.Adam(params=self.model.parameters(), lr=hyper_params.kl_lr,
                                            weight_decay=hyper_params.weight_decay)
 
         if hyper_params.lr_schd:
@@ -283,7 +284,8 @@ class STTransformerDiffusionTrainer(STCollatedMiniBatchTrainer):
         if self.loader_train.dataset.anchor is None:
             self.init_adaptive_anchor(self.loader_train.dataset)
         
-        self.kl_warmup_epochs = getattr(self.hyper_params, "kl_warmup_epochs", 50)  # KL退火周期
+        self.kl_warmup_epochs = getattr(self.hyper_params, "kl_warmup_epochs", 50)  # KL退火周期        
+        self.kl_lr = getattr(self.hyper_params, "kl_lr", 0.001)  # KL lr
         self.kl_active = False  # KL损失是否开始参与训练
 
         for cnt, batch in enumerate(tqdm(self.loader_train, desc=f'Train Epoch {epoch}', mininterval=1)):

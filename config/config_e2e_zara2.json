@@ -29,5 +29,6 @@
 	
 	"vae_train":true,
 	"kl_beta":0.3,
+	"kl_lr":0.005,
 	"kl_warmup_epochs":8
 }

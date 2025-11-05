@@ -3,6 +3,7 @@ import json
 import random
 import numpy as np
 import torch
+import torch.nn.functional as F
 
 
 def reproducibility_settings(seed: int = 0):
@@ -64,6 +65,26 @@ def print_arguments(args, length=100, sep=': ', delim=' | '):
             print(delim, end='')
             cl += len(delim)
     print('')
+    
+def adaptive_gaussian_l2(mu1, logvar1, mu2, logvar2):
+    """
+    根据方差自适应调整权重
+    """
+    # 数值稳定处理
+    logvar1_c = logvar1.clamp(min=-6.0, max=6.0)
+    logvar2_c = logvar2.clamp(min=-6.0, max=6.0)
+    
+    # 计算平均方差作为权重依据
+    avg_var = 0.5 * (logvar1_c.exp() + logvar2_c.exp())
+    
+    # 均值损失：方差大的维度权重小
+    mu_weights = 1.0 / (avg_var + 1e-6)
+    weighted_mu_loss = (mu_weights * (mu1 - mu2).pow(2)).mean()
+    
+    # 方差损失
+    var_loss = F.mse_loss(logvar1_c, logvar2_c)
+    
+    return weighted_mu_loss + 0.1 * var_loss
 
 def kl_divergence_between_gaussians(mu1, logvar1, mu2, logvar2):
     # 计算两个多维高斯分布 q1 ~ N(mu1, σ1^2), q2 ~ N(mu2, σ2^2) 的 KL 散度
@@ -76,6 +97,7 @@ def kl_divergence_between_gaussians(mu1, logvar1, mu2, logvar2):
         (logvar2_c - logvar1_c) + (var1 + (mu1 - mu2).pow(2)) / var2 - 1,
         dim=1
     )
+    
     return kl.mean()  # batch平均
 
 def augment_trajectory(obs_traj, pred_traj, flip=True, reverse=True):

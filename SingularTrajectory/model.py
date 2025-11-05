@@ -3,7 +3,7 @@ import torch.nn as nn
 from .anchor import AdaptiveAnchor
 from .space import SingularSpace
 from .neighbors import neighbor_Extractor
-from utils import kl_divergence_between_gaussians
+from utils import kl_divergence_between_gaussians, adaptive_gaussian_l2
 
 class SingularTrajectory(nn.Module):
     r"""The SingularTrajectory model
